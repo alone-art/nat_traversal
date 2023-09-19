@@ -13,9 +13,9 @@
 
 #include "nat_traversal.h"
 
-#define MAX_PORT 65535
-#define MIN_PORT 1025
-#define NUM_OF_PORTS 700
+#define MAX_PORT 55000
+#define MIN_PORT 50000
+#define NUM_OF_PORTS 1024
 
 #define MSG_BUF_SIZE 512
 
@@ -50,6 +50,16 @@ static int get_peer_info(client* cli, uint32_t peer_id, struct peer_info *peer) 
     }
 }
 
+static int send_dummy_udp_packet2(int fd, struct sockaddr_in addr) {
+    char dummy = 'a';
+
+    struct timeval tv = {5, 0};
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, (const char*)&tv, sizeof(tv));
+    
+    return sendto(fd, &dummy, 1, 0, (struct sockaddr *)&addr, sizeof(addr));
+}
+
+
 static int send_dummy_udp_packet(int fd, struct sockaddr_in addr) {
     char dummy = 'c';
 
@@ -82,7 +92,7 @@ static int punch_hole(struct sockaddr_in peer_addr, int ttl) {
         setsockopt(hole, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl));
 
         // send short ttl packets to avoid triggering flooding protection of NAT in front of peer
-        if (send_dummy_udp_packet(hole, peer_addr) < 0) {
+        if (send_dummy_udp_packet2(hole, peer_addr) < 0) {
             return -1;
         }
     }
@@ -130,6 +140,41 @@ static int wait_for_peer(int* socks, int sock_num, struct timeval *timeout) {
     return -1;
 }
 
+
+static int wait_for_peer2(int* socks, int sock_num, struct timeval *timeout) {
+    fd_set fds;  
+    int max_fd = 0;
+    FD_ZERO(&fds);
+
+    int i;
+    for (i = 0; i < sock_num; ++i) {
+        FD_SET(socks[i], &fds);
+        if (socks[i] > max_fd) {
+            max_fd = socks[i];
+        }
+    }
+    int ret = select(max_fd + 1, &fds, NULL, NULL, timeout);
+
+    int index = -1;
+    if (ret > 0) {
+        for (i = 0; i < sock_num; ++i) {
+            if (FD_ISSET(socks[i], &fds)) {
+                index = i;
+                break;
+            }
+        }
+    } else {
+        // timeout or error
+    }
+
+    // one of the fds is ready, close others
+    if (index != -1) {
+        return socks[index];
+    }
+
+    return -1;
+}
+
 static void shuffle(int *num, int len) {
     srand(time(NULL));
 
@@ -168,6 +213,7 @@ static int connect_to_symmetric_nat(client* c, uint32_t peer_id, struct peer_inf
     peer_addr.sin_addr.s_addr = inet_addr(remote_peer.ip);
 
     int *holes = malloc(NUM_OF_PORTS * sizeof(int));
+
     shuffle(ports, MAX_PORT - MIN_PORT + 1);
 
     int i = 0;
@@ -176,6 +222,7 @@ static int connect_to_symmetric_nat(client* c, uint32_t peer_id, struct peer_inf
         if (port != remote_peer.port) { // exclude the used one
             peer_addr.sin_port = htons(port);
 
+            printf("punch hole %d %s:%d\n", i, inet_ntoa(peer_addr.sin_addr), ntohs(peer_addr.sin_port));
             if ((holes[i] = punch_hole(peer_addr, c->ttl)) < 0) {
                 // NAT in front of us wound't tolerate too many ports used by one application
                 verbose_log("failed to punch hole, error: %s\n", strerror(errno));
@@ -196,9 +243,30 @@ static int connect_to_symmetric_nat(client* c, uint32_t peer_id, struct peer_inf
     send_to_punch_server(c);
 
     struct timeval timeout={100, 0};
-    int fd = wait_for_peer(holes, i, &timeout);
+    int fd = wait_for_peer2(holes, i, &timeout);
     if (fd > 0) {
-        on_connected(fd);
+        while(1) 
+        {
+            char a = on_connected2(fd);
+            if(a == 'a')
+            {
+                printf("recv self nat packet, rewait for peer\n");
+                fd = wait_for_peer2(holes, i, &timeout);
+                if (fd > 0) {
+
+                }
+                else
+                {
+                    int j = 0;
+                    for (; j < i; ++j) {
+                        close(holes[j]);
+                    }
+                    printf("timout, not connected\n");
+                    break;
+                }
+            }
+            sleep(1);
+        }
     } else {
         int j = 0;
         for (; j < i; ++j) {
@@ -272,7 +340,11 @@ static void* server_notify_handler(void* data) {
     struct timeval tv = {100, 0};
     int fd = wait_for_peer(sock_array, i, &tv);
     if (fd > 0) {
-        on_connected(fd);
+        while (1)
+        {
+            on_connected(fd);
+            sleep(1);
+        }
     } else {
         int j = 0;
         for (j = 0; j < i; ++j) {
@@ -342,12 +414,33 @@ void on_connected(int sock) {
     recvfrom(sock, buf, MSG_BUF_SIZE, 0, (struct sockaddr *)&remote_addr, &fromlen);
     printf("recv %s\n", buf);
 
+    struct sockaddr_in local_addr;
+    socklen_t len;
+    getsockname(sock, (struct sockaddr *)&local_addr, &len);
+    printf("local addr %s:%d", inet_ntoa(local_addr.sin_addr), ntohs(local_addr.sin_port));
     printf("connected with peer from %s:%d\n", inet_ntoa(remote_addr.sin_addr), ntohs(remote_addr.sin_port));
 
     // restore the ttl
     int ttl = 64;
     setsockopt(sock, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl));
     sendto(sock, "hello, peer", strlen("hello, peer"), 0, (struct sockaddr *)&remote_addr, sizeof(remote_addr));
+}
+
+
+char on_connected2(int sock) {
+    char buf[MSG_BUF_SIZE] = {0};
+    struct sockaddr_in remote_addr;
+    socklen_t fromlen = sizeof remote_addr;
+    recvfrom(sock, buf, MSG_BUF_SIZE, 0, (struct sockaddr *)&remote_addr, &fromlen);
+    printf("recv %s\n", buf);
+
+    printf("connected with peer from %s:%d\n", inet_ntoa(remote_addr.sin_addr), ntohs(remote_addr.sin_port));
+
+    // restore the ttl
+    int ttl = 64;
+    setsockopt(sock, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl));
+    sendto(sock, "hello, peer", strlen("hello, peer"), 0, (struct sockaddr *)&remote_addr, sizeof(remote_addr));
+    return buf[0];
 }
 
 int connect_to_peer(client* cli, uint32_t peer_id) {
