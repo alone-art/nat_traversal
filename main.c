@@ -3,9 +3,11 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <pthread.h>
+#include <errno.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <sys/resource.h>
 
 #include "nat_traversal.h"
 
@@ -21,6 +23,26 @@ static char *stun_servers[] = {
 
 // definition checked against extern declaration
 int verbose = 0;
+
+void setfdlimit(void)
+{
+    struct rlimit rlim;
+
+    if (getrlimit(RLIMIT_NOFILE, &rlim) == -1) {
+        printf("getrlimit:%s", strerror(errno));
+    }
+
+    printf("rlim.rlim_cur:%ld, rlim.rlim_max:%ld\n", rlim.rlim_cur, rlim.rlim_max);
+    if(rlim.rlim_max < 5000)
+        rlim.rlim_cur = rlim.rlim_max;
+    else
+        rlim.rlim_cur = 5000;
+
+    if (setrlimit(RLIMIT_NOFILE, &rlim) == -1) {
+        printf("getrlimit:%s", strerror(errno));
+    }
+    printf("changed rlim.rlim_cur: 5000\n");
+}
 
 int main(int argc, char** argv)
 {
@@ -73,6 +95,8 @@ int main(int argc, char** argv)
                 return -1;
         }
     }
+
+    setfdlimit();
 
     char ext_ip[16] = {0};
     uint16_t ext_port = 0;
