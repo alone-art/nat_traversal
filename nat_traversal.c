@@ -329,10 +329,21 @@ static void* server_notify_handler(void* data) {
         int fd = wait_for_peer(sock_array, ++i, &tv);
         if (fd > 0) {
             // connected
-            on_connected(fd);
-
+            char c = on_connected(fd);
+            if(c == 'c')
+            {
+                printf("recv self nat packet\n");
+            }
+            else
+            {
+                while (1)
+                {
+                    on_connected(fd);
+                    sleep(1);
+                }
+            }
             // TODO
-            return NULL;
+            // return NULL;
         }
     }
 
@@ -342,7 +353,19 @@ static void* server_notify_handler(void* data) {
     if (fd > 0) {
         while (1)
         {
-            on_connected(fd);
+            char c = on_connected(fd);
+            if(c == 'c')
+            {
+                printf("recv self nat packet\n");
+                int fd = wait_for_peer(sock_array, i, &tv);
+                if (fd > 0) {
+                } else {
+                    int j = 0;
+                    for (j = 0; j < i; ++j) {
+                        close(sock_array[j]);
+                    }
+                }
+            }
             sleep(1);
         }
     } else {
@@ -407,7 +430,7 @@ pthread_t wait_for_command(int* server_sock)
     return thread_id;
 }
 
-void on_connected(int sock) {
+char on_connected(int sock) {
     char buf[MSG_BUF_SIZE] = {0};
     struct sockaddr_in remote_addr;
     socklen_t fromlen = sizeof remote_addr;
@@ -417,13 +440,17 @@ void on_connected(int sock) {
     struct sockaddr_in local_addr;
     socklen_t len;
     getsockname(sock, (struct sockaddr *)&local_addr, &len);
-    printf("local addr %s:%d", inet_ntoa(local_addr.sin_addr), ntohs(local_addr.sin_port));
+    printf("local addr %s:%d\n", inet_ntoa(local_addr.sin_addr), ntohs(local_addr.sin_port));
     printf("connected with peer from %s:%d\n", inet_ntoa(remote_addr.sin_addr), ntohs(remote_addr.sin_port));
 
-    // restore the ttl
-    int ttl = 64;
-    setsockopt(sock, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl));
-    sendto(sock, "hello, peer", strlen("hello, peer"), 0, (struct sockaddr *)&remote_addr, sizeof(remote_addr));
+    if(buf[0] != 'c')
+    {
+        // restore the ttl
+        int ttl = 64;
+        setsockopt(sock, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl));
+        sendto(sock, "hello, peer", strlen("hello, peer"), 0, (struct sockaddr *)&remote_addr, sizeof(remote_addr));
+    }
+    return buf[0];
 }
 
 
@@ -434,14 +461,23 @@ char on_connected2(int sock) {
     recvfrom(sock, buf, MSG_BUF_SIZE, 0, (struct sockaddr *)&remote_addr, &fromlen);
     printf("recv %s\n", buf);
 
+    struct sockaddr_in local_addr;
+    socklen_t len;
+    getsockname(sock, (struct sockaddr *)&local_addr, &len);
+    printf("local addr %s:%d\n", inet_ntoa(local_addr.sin_addr), ntohs(local_addr.sin_port));
     printf("connected with peer from %s:%d\n", inet_ntoa(remote_addr.sin_addr), ntohs(remote_addr.sin_port));
 
-    // restore the ttl
-    int ttl = 64;
-    setsockopt(sock, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl));
-    sendto(sock, "hello, peer", strlen("hello, peer"), 0, (struct sockaddr *)&remote_addr, sizeof(remote_addr));
+    if(buf[0] != 'a')
+    {
+        // restore the ttl
+        int ttl = 64;
+        setsockopt(sock, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl));
+        sendto(sock, "hello, peer", strlen("hello, peer"), 0, (struct sockaddr *)&remote_addr, sizeof(remote_addr));
+        
+    }
     return buf[0];
 }
+
 
 int connect_to_peer(client* cli, uint32_t peer_id) {
     struct peer_info peer;
